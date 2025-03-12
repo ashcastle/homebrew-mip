@@ -16,7 +16,7 @@ ifconfig의 너무 많은 정보가 오히려 불편하여, 오직 필수적인 
 
 ```bash
 brew tap ashcastle/homebrew-mip
-brew install homebrew-mip
+brew install ashcastle/mip/mipconfig
 ```
 사용 방법
 
