@@ -18,40 +18,37 @@ ifconfig의 너무 많은 정보가 오히려 불편하여, 오직 필수적인 
 brew tap ashcastle/homebrew-mip
 brew install ashcastle/mip
 ```
-사용 방법
+## 사용 방법
 
-설치 후 터미널에서 mipconfig 명령어를 실행하면 기본 네트워크 정보를 확인할 수 있습니다.
+설치 후 터미널에서 `mip -help` 명령어를 실행하면 기본 네트워크 정보를 확인할 수 있습니다.
 
-예시
+### 예시
 	•	기본 실행
 
-mipconfig
+`mip`
 
 
 	•	상세 정보 포함 실행
 
-mipconfig -all
+`mip -all`
 
 
 	•	특정 인터페이스 정보 출력
 
-mipconfig -interface en0
+`mip -interface en0`
 
 
 	•	JSON 형식 출력
 
-mipconfig -json
-```
+`mip -json`
 
 
-기여 방법
 
-이 프로젝트는 GNU GPL 라이선스 하에 운영되며, 기여자 여러분의 참여를 적극 환영합니다.
-버그 리포트, 기능 개선, 문서 업데이트 등 다양한 기여를 통해 함께 발전시켜 나갈 수 있습니다.
-	1.	저장소를 포크(fork)합니다.
-	2.	새로운 브랜치에서 변경 사항을 커밋(commit)합니다.
-	3.	풀 리퀘스트(Pull Request)를 보내어 변경 사항을 제안합니다.
+## 기여 방법
 
-라이선스
+> 이 프로젝트는 GNU GPL 라이선스 하에 운영되며, 기여자 여러분의 참여를 적극 환영합니다.
+> 버그 리포트, 기능 개선, 문서 업데이트 등 다양한 기여를 통해 함께 발전시켜 나갈 수 있습니다.
 
-이 프로젝트는 GNU GPL 라이선스 하에 배포됩니다.
+## 라이선스
+
+> 이 프로젝트는 GNU GPL 라이선스 하에 배포됩니다.
