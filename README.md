@@ -16,37 +16,38 @@ Install mip using Homebrew with the following commands (brew deployment details 
 ```bash
 brew tap ashcastle/homebrew-mip
 brew install ashcastle/mip
+```
 
-Usage
+## Usage
 
 After installation, simply run the mip command in your terminal to view your network configuration.
 
-Examples
+## Examples
 	•	Basic Execution:
 
-mip
+`mip`
 
 
 	•	Detailed Information:
 
-mip -all
+`mip -all`
 
 
 	•	Display Specific Interface Information:
 
-mip -interface en0
+`mip -interface en0`
 
 
 	•	JSON Format Output:
 
-mip -json
+`mip -json`
 
 
 
-Contributing
+## Contributing
 
 This project is licensed under the GNU GPL and welcomes contributions from the community. Whether you’re reporting a bug, suggesting a feature, or improving documentation, your contributions are highly appreciated.
 
-License
+## License
 
 This project is distributed under the GNU GPL.
