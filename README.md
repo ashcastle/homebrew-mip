@@ -1,4 +1,4 @@
-# mipconfig
+# mip (ipconfig in MacOS)
 
 ## 개요
 이 프로젝트는 macOS에서 ifconfig 명령어가 출력하는 방대한 불필요한 정보 대신, Windows의 ipconfig와 유사한 방식으로 필요한 네트워크 정보만을 간결하게 확인할 수 있도록 제작되었습니다.  
@@ -15,8 +15,8 @@ ifconfig의 너무 많은 정보가 오히려 불편하여, 오직 필수적인 
 **Homebrew**를 사용하여 간편하게 설치할 수 있습니다. (brew 배포 관련 내용은 사장님께서 관리하시는 부분입니다.)
 
 ```bash
-brew tap ashcastle/mipconfig
-brew install mipconfig
+brew tap ashcastle/homebrew-mip
+brew install homebrew-mip
 ```
 사용 방법
 

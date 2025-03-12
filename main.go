@@ -11,6 +11,8 @@ import (
 	"strings"
 )
 
+const cmdName = "mip"
+
 type AdapterInfo struct {
 	Name             string   `json:"name"`
 	Type             string   `json:"type"`
@@ -165,10 +167,10 @@ func main() {
 	flag.Parse()
 
 	if len(flag.Args()) > 0 {
-		fmt.Fprintf(os.Stderr, "You entered the wrong command\n")
+		fmt.Fprintf(os.Stderr, "Usage: %s [options]\n", cmdName)
+		os.Exit(1)
 	}
-	fmt.Println("Windows IP Configuration")
-	fmt.Println()
+	fmt.Printf("%s: Network Configuration\n\n", cmdName)
 
 	interfaces, err := net.Interfaces()
 	if err != nil {
