@@ -15,7 +15,7 @@ Install mip using Homebrew with the following commands (brew deployment details 
 
 ```bash
 brew tap ashcastle/homebrew-mip
-brew install ashcastle/mip
+brew install ashcastle/mip/mipconfig
 ```
 
 ## Usage
