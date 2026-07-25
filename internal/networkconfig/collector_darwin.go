@@ -45,6 +45,7 @@ type serviceRecords struct {
 	root      scutilRecord
 	iface     scutilRecord
 	setupIPv4 scutilRecord
+	setupIPv6 scutilRecord
 	stateIPv4 scutilRecord
 	stateIPv6 scutilRecord
 	dns       scutilRecord
@@ -102,6 +103,9 @@ func (c darwinCollector) Collect(ctx context.Context) (Configuration, error) {
 	}
 	if output, runErr := c.run(ctx, sysctlPath, []string{"-n", "net.inet.ip.forwarding"}, ""); runErr == nil {
 		config.Host.IPRoutingEnabled = strings.TrimSpace(string(output)) == "1"
+	}
+	if output, runErr := c.run(ctx, appleIPConfigPath, []string{"getdhcpduid"}, ""); runErr == nil {
+		config.Host.DHCPv6DUID = strings.TrimSpace(string(output))
 	}
 
 	adapters := make(map[string]*Adapter, len(snapshots)+len(services))
@@ -171,6 +175,7 @@ func (c darwinCollector) Collect(ctx context.Context) (Configuration, error) {
 		adapter.AutoconfigurationEnabled = adapter.DHCPEnabled ||
 			strings.EqualFold(configMethod, "INFORM") ||
 			strings.EqualFold(configMethod, "LinkLocal")
+		adapter.IPv6Automatic = strings.EqualFold(service.setupIPv6.first("ConfigMethod"), "Automatic")
 		adapter.ConnectionSpecificSuffix = firstNonEmpty(
 			service.dns.first("DomainName"),
 			firstValue(service.dns.values("SearchDomains")),
@@ -178,6 +183,11 @@ func (c darwinCollector) Collect(ctx context.Context) (Configuration, error) {
 		adapter.LeaseObtained = service.dhcp.first("LeaseStartTime")
 		adapter.LeaseExpires = service.dhcp.first("LeaseExpirationTime")
 		adapter.DHCPServer = decodeIPv4Data(service.dhcp.first("Option_54"))
+		if adapter.IPv6Automatic {
+			if output, runErr := c.run(ctx, appleIPConfigPath, []string{"getdhcpiaid", interfaceName}, ""); runErr == nil {
+				adapter.DHCPv6IAID = strings.TrimSpace(string(output))
+			}
+		}
 		adapter.ServiceOrder = valueIndex(serviceOrder, service.id)
 		adapter.Primary = service.id == primaryService || interfaceName == primaryInterface
 
@@ -253,6 +263,7 @@ func (c darwinCollector) loadSystemConfiguration(ctx context.Context, serviceIDs
 			"Setup:"+prefix,
 			"Setup:"+prefix+"/Interface",
 			"Setup:"+prefix+"/IPv4",
+			"Setup:"+prefix+"/IPv6",
 			"State:"+prefix+"/IPv4",
 			"State:"+prefix+"/IPv6",
 			"State:"+prefix+"/DNS",
@@ -279,16 +290,17 @@ func (c darwinCollector) loadSystemConfiguration(ctx context.Context, serviceIDs
 	services := make([]serviceRecords, 0, len(serviceIDs))
 	offset := 3
 	for index, id := range serviceIDs {
-		start := offset + index*7
+		start := offset + index*8
 		services = append(services, serviceRecords{
 			id:        id,
 			root:      records[start],
 			iface:     records[start+1],
 			setupIPv4: records[start+2],
-			stateIPv4: records[start+3],
-			stateIPv6: records[start+4],
-			dns:       records[start+5],
-			dhcp:      records[start+6],
+			setupIPv6: records[start+3],
+			stateIPv4: records[start+4],
+			stateIPv6: records[start+5],
+			dns:       records[start+6],
+			dhcp:      records[start+7],
 		})
 	}
 

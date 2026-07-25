@@ -22,16 +22,20 @@ Wireless LAN adapter Wi-Fi:
 
 - `ipconfig` for the Windows-style basic adapter view
 - `ipconfig /all` for host, MAC, DHCP, DNS, IPv4/IPv6, lease, and disconnected
-  adapter details
-- `ipconfig '/?'` or `ipconfig -h` for help
+  adapter details, including DHCPv6 DUID/IAID when macOS exposes them
+- `ipconfig '/?'`, `ipconfig -h`, or `ipconfig help` for help
+- `/release`, `/renew`, `/release6`, and `/renew6` with optional adapter names
+  or `*` wildcard matching
+- `/displaydns` for available macOS Host cache entries
+- `/flushdns` for the macOS Directory Service and `mDNSResponder` caches
 - `-interface <pattern>` with case-insensitive `*` wildcard matching
 - `-json` for stable machine-readable adapter data
 - Physical, bridge, VPN, and disconnected macOS network services
 - IPv6 link-local scope IDs and per-service DNS configuration
 
-The state-changing Windows options such as `/release`, `/renew`, and
-`/flushdns` are intentionally not implemented yet. They fail before collecting
-network data and confirm that no settings were changed.
+Windows-only concepts with no faithful macOS equivalent—`/registerdns`, DHCP
+class IDs, and network compartments—return `Not applicable on macOS` instead
+of pretending to succeed. `/all` uses the same wording for NetBIOS and WINS.
 
 ## Install
 
@@ -81,10 +85,16 @@ go build -o ipconfig ./cmd/ipconfig
 ```bash
 ipconfig
 ipconfig /all
+ipconfig /renew en0
+ipconfig /renew 'Wi*'
+ipconfig /release6 en0
+ipconfig /displaydns
+ipconfig /flushdns
 ipconfig -interface en0
 ipconfig -interface 'en*'
 ipconfig -json
 ipconfig -h
+ipconfig help
 ```
 
 Quote `/?` and wildcard arguments in zsh because the shell otherwise treats
@@ -92,11 +102,37 @@ Quote `/?` and wildcard arguments in zsh because the shell otherwise treats
 
 ```bash
 ipconfig '/?'
+ipconfig /\?
 ipconfig -interface 'utun*'
 ```
 
 JSON output is an array of normalized adapter objects and contains no banner or
 diagnostics.
+
+## Administrator actions
+
+Cache and DHCP actions require administrator privileges on macOS. Resolve this
+project's executable before invoking `sudo`, because the administrator's
+`PATH` may otherwise select Apple's unrelated `/usr/sbin/ipconfig`:
+
+```bash
+sudo "$(command -v ipconfig)" /renew en0
+sudo "$(command -v ipconfig)" /displaydns
+sudo "$(command -v ipconfig)" /flushdns
+```
+
+The DHCP mappings use Apple's `/usr/sbin/ipconfig set` interface:
+
+- `/release` → `NONE`
+- `/renew` → `DHCP`
+- `/release6` → `NONE-V6`
+- `/renew6` → `AUTOMATIC-V6`
+
+Apple documents this interface for test and debugging use. Actions without an
+adapter target every eligible configured adapter, matching Windows behavior.
+Use a specific adapter when you do not intend to affect every DHCP service.
+`/flushdns` runs `dscacheutil -flushcache` and then sends `HUP` to
+`mDNSResponder`; failure in either step is reported.
 
 ## macOS command-name conflict
 
@@ -116,6 +152,9 @@ The CLI and network collection code are separated:
 
 - `internal/networkconfig` normalizes interfaces and macOS System Configuration
   records into a testable network model.
+- Network actions use a separate injectable executor, so command paths,
+  privileges, adapter eligibility, failures, and ordering are tested without
+  releasing a real lease or flushing the live cache.
 - `internal/ipconfig` parses Windows-compatible syntax and renders text or JSON.
 - macOS collection uses `net.Interfaces`, `/usr/sbin/scutil`, and
   `/usr/sbin/networksetup`. Missing optional records do not fail the entire
@@ -130,6 +169,9 @@ go test -race ./...
 go vet ./...
 go build ./cmd/ipconfig
 ```
+
+The automated test suite never releases an active lease, renews an interface,
+or flushes the live DNS cache.
 
 ## License
 

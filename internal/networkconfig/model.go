@@ -16,6 +16,7 @@ type HostInfo struct {
 	NodeType         string `json:"node_type"`
 	IPRoutingEnabled bool   `json:"ip_routing_enabled"`
 	WINSProxyEnabled bool   `json:"wins_proxy_enabled"`
+	DHCPv6DUID       string `json:"dhcpv6_duid,omitempty"`
 }
 
 type Adapter struct {
@@ -28,6 +29,7 @@ type Adapter struct {
 	MTU                      int              `json:"mtu,omitempty"`
 	DHCPEnabled              bool             `json:"dhcp_enabled"`
 	AutoconfigurationEnabled bool             `json:"autoconfiguration_enabled"`
+	IPv6Automatic            bool             `json:"ipv6_automatic"`
 	ConnectionSpecificSuffix string           `json:"connection_specific_dns_suffix,omitempty"`
 	IPv4Addresses            []IPv4Assignment `json:"ipv4_addresses,omitempty"`
 	IPv6Addresses            []string         `json:"ipv6_addresses,omitempty"`
@@ -36,6 +38,7 @@ type Adapter struct {
 	DNSServers               []string         `json:"dns_servers,omitempty"`
 	LeaseObtained            string           `json:"lease_obtained,omitempty"`
 	LeaseExpires             string           `json:"lease_expires,omitempty"`
+	DHCPv6IAID               string           `json:"dhcpv6_iaid,omitempty"`
 	Primary                  bool             `json:"primary,omitempty"`
 	ServiceOrder             int              `json:"-"`
 }

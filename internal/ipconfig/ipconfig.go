@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"os"
 	"strings"
 	"time"
 
@@ -15,10 +16,12 @@ import (
 
 const CommandName = "ipconfig"
 
-const collectionTimeout = 5 * time.Second
+const commandTimeout = 15 * time.Second
 
 type dependencies struct {
-	collect func(context.Context) (networkconfig.Configuration, error)
+	collect    func(context.Context) (networkconfig.Configuration, error)
+	execute    func(context.Context, networkconfig.ActionRequest) (networkconfig.ActionResult, error)
+	executable func() (string, error)
 }
 
 type options struct {
@@ -27,40 +30,49 @@ type options struct {
 	interfacePattern string
 }
 
-type unsupportedOptionError struct {
-	option string
-}
-
-func (e unsupportedOptionError) Error() string {
-	return fmt.Sprintf("%s is not supported on macOS yet; no network settings were changed", e.option)
+type invocation struct {
+	options             options
+	help                bool
+	action              networkconfig.Action
+	adapterPattern      string
+	notApplicableOption string
 }
 
 func Run(stdout, stderr io.Writer, args []string) int {
-	return run(stdout, stderr, args, dependencies{collect: networkconfig.Collect})
+	return run(stdout, stderr, args, dependencies{
+		collect:    networkconfig.Collect,
+		execute:    networkconfig.ExecuteAction,
+		executable: os.Executable,
+	})
 }
 
 func run(stdout, stderr io.Writer, args []string, deps dependencies) int {
-	normalized, err := normalizeArgs(args)
+	parsed, err := parseInvocation(stderr, args)
 	if err != nil {
 		fmt.Fprintf(stderr, "%s: %v\n", CommandName, err)
 		return 2
 	}
 
-	parsed, help, err := parseOptions(stderr, normalized)
-	if help {
-		if _, writeErr := io.WriteString(stdout, usageText()); writeErr != nil {
-			fmt.Fprintf(stderr, "%s: write output: %v\n", CommandName, writeErr)
-			return 1
-		}
-		return 0
+	if parsed.help {
+		return writeResult(stdout, stderr, usageText())
 	}
-	if err != nil {
-		return 2
+	if parsed.notApplicableOption != "" {
+		if code := writeResult(stdout, stderr, renderNotApplicable(parsed.notApplicableOption)); code != 0 {
+			return code
+		}
+		return 1
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), collectionTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), commandTimeout)
 	defer cancel()
 
+	if parsed.action != "" {
+		return runAction(ctx, stdout, stderr, parsed, deps)
+	}
+	return runDisplay(ctx, stdout, stderr, parsed.options, deps)
+}
+
+func runDisplay(ctx context.Context, stdout, stderr io.Writer, parsed options, deps dependencies) int {
 	config, err := deps.collect(ctx)
 	if err != nil {
 		fmt.Fprintf(stderr, "%s: %v\n", CommandName, err)
@@ -82,15 +94,110 @@ func run(stdout, stderr io.Writer, args []string, deps dependencies) int {
 		}
 		return 0
 	}
-
-	if _, err := io.WriteString(stdout, renderText(config, parsed.showAll)); err != nil {
-		fmt.Fprintf(stderr, "%s: write output: %v\n", CommandName, err)
-		return 1
-	}
-	return 0
+	return writeResult(stdout, stderr, renderText(config, parsed.showAll))
 }
 
-func normalizeArgs(args []string) ([]string, error) {
+func runAction(ctx context.Context, stdout, stderr io.Writer, parsed invocation, deps dependencies) int {
+	request := networkconfig.ActionRequest{Action: parsed.action}
+	if actionNeedsAdapters(parsed.action) {
+		config, err := deps.collect(ctx)
+		if err != nil {
+			fmt.Fprintf(stderr, "%s: %v\n", CommandName, err)
+			return 1
+		}
+
+		request.Adapters, err = selectActionAdapters(config.Adapters, parsed.action, parsed.adapterPattern)
+		if err != nil {
+			fmt.Fprintf(stderr, "%s: %v\n", CommandName, err)
+			return 1
+		}
+	}
+
+	result, err := deps.execute(ctx, request)
+	if err != nil {
+		var privilegeError networkconfig.PrivilegeError
+		if errors.As(err, &privilegeError) {
+			fmt.Fprintf(stderr, "%s: %v\n", CommandName, privilegeError)
+			if len(result.Adapters) > 0 {
+				fmt.Fprintf(stderr, "Completed before failure: %s\n", strings.Join(result.Adapters, ", "))
+			}
+			if retry := privilegeRetryCommand(parsed, deps.executable); retry != "" {
+				fmt.Fprintf(stderr, "Run: %s\n", retry)
+			}
+			return 1
+		}
+		fmt.Fprintf(stderr, "%s: %v\n", CommandName, err)
+		if len(result.Adapters) > 0 {
+			fmt.Fprintf(stderr, "Completed before failure: %s\n", strings.Join(result.Adapters, ", "))
+		}
+		return 1
+	}
+
+	var output string
+	switch parsed.action {
+	case networkconfig.ActionDisplayDNS:
+		output = renderDNSCache(result)
+	case networkconfig.ActionFlushDNS:
+		output = "\nWindows IP Configuration\n\nSuccessfully flushed the DNS Resolver Cache.\n"
+	default:
+		output = renderAdapterAction(parsed.action, result.Adapters)
+	}
+	return writeResult(stdout, stderr, output)
+}
+
+func parseInvocation(stderr io.Writer, args []string) (invocation, error) {
+	if len(args) == 1 && strings.EqualFold(args[0], "help") {
+		return invocation{help: true}, nil
+	}
+
+	if len(args) > 0 && strings.HasPrefix(args[0], "/") {
+		option := strings.ToLower(args[0])
+		switch option {
+		case "/release":
+			return parseAdapterAction(networkconfig.ActionRelease4, args[1:])
+		case "/renew":
+			return parseAdapterAction(networkconfig.ActionRenew4, args[1:])
+		case "/release6":
+			return parseAdapterAction(networkconfig.ActionRelease6, args[1:])
+		case "/renew6":
+			return parseAdapterAction(networkconfig.ActionRenew6, args[1:])
+		case "/displaydns":
+			return parseStandaloneAction(networkconfig.ActionDisplayDNS, args[1:])
+		case "/flushdns":
+			return parseStandaloneAction(networkconfig.ActionFlushDNS, args[1:])
+		case "/registerdns", "/showclassid", "/setclassid", "/allcompartments":
+			return invocation{notApplicableOption: option}, nil
+		}
+	}
+
+	normalized, err := normalizeDisplayArgs(args)
+	if err != nil {
+		return invocation{}, err
+	}
+	parsed, help, err := parseDisplayOptions(stderr, normalized)
+	return invocation{options: parsed, help: help}, err
+}
+
+func parseAdapterAction(action networkconfig.Action, args []string) (invocation, error) {
+	for _, arg := range args {
+		if strings.HasPrefix(arg, "-") || strings.HasPrefix(arg, "/") {
+			return invocation{}, fmt.Errorf("/%s cannot be combined with %q", action, arg)
+		}
+	}
+	return invocation{
+		action:         action,
+		adapterPattern: strings.TrimSpace(strings.Join(args, " ")),
+	}, nil
+}
+
+func parseStandaloneAction(action networkconfig.Action, args []string) (invocation, error) {
+	if len(args) > 0 {
+		return invocation{}, fmt.Errorf("/%s does not accept additional arguments", action)
+	}
+	return invocation{action: action}, nil
+}
+
+func normalizeDisplayArgs(args []string) ([]string, error) {
 	normalized := make([]string, 0, len(args))
 	for _, arg := range args {
 		if !strings.HasPrefix(arg, "/") {
@@ -103,17 +210,14 @@ func normalizeArgs(args []string) ([]string, error) {
 			normalized = append(normalized, "-all")
 		case "/?":
 			normalized = append(normalized, "-help")
-		case "/release", "/release6", "/renew", "/renew6", "/flushdns", "/registerdns",
-			"/displaydns", "/showclassid", "/setclassid", "/allcompartments":
-			return nil, unsupportedOptionError{option: arg}
 		default:
-			return nil, fmt.Errorf("unrecognized option %q; use /? for help", arg)
+			return nil, fmt.Errorf("unrecognized option %q; use -h or help", arg)
 		}
 	}
 	return normalized, nil
 }
 
-func parseOptions(stderr io.Writer, args []string) (options, bool, error) {
+func parseDisplayOptions(stderr io.Writer, args []string) (options, bool, error) {
 	fs := flag.NewFlagSet(CommandName, flag.ContinueOnError)
 	fs.SetOutput(stderr)
 
@@ -145,20 +249,84 @@ func parseOptions(stderr io.Writer, args []string) (options, bool, error) {
 func usageText() string {
 	return `
 USAGE:
-    ipconfig [/all] [/?]
+    ipconfig
+    ipconfig /all
+    ipconfig /release [adapter]
+    ipconfig /renew [adapter]
+    ipconfig /release6 [adapter]
+    ipconfig /renew6 [adapter]
+    ipconfig /displaydns
+    ipconfig /flushdns
+    ipconfig /?
 
 WINDOWS-COMPATIBLE OPTIONS:
     /all                 Display the full TCP/IP configuration.
-    /?                   Display this help.
+    /release [adapter]   Release DHCP-assigned IPv4 configuration.
+    /renew [adapter]     Renew DHCP-assigned IPv4 configuration.
+    /release6 [adapter]  Release automatic IPv6 configuration.
+    /renew6 [adapter]    Renew automatic IPv6 configuration.
+    /displaydns          Display available macOS Host cache entries.
+    /flushdns            Flush the macOS DNS resolver caches.
+    /?                   Display this help. In zsh, use /\? or -h.
 
 MACOS EXTENSIONS:
+    help                 Display help without shell escaping.
     -interface <pattern> Display matching adapters; * is supported.
     -json                Output adapter data as JSON.
 
-Unsupported Windows options: /release, /renew, /release6, /renew6,
-/flushdns, /registerdns, /displaydns, /showclassid, /setclassid,
-and /allcompartments. No network settings are changed for these options.
+Administrator privileges are required for cache and DHCP actions. The options
+/registerdns, /showclassid, /setclassid, and /allcompartments have no faithful
+macOS equivalent and report "Not applicable on macOS".
 `
+}
+
+func selectActionAdapters(adapters []networkconfig.Adapter, action networkconfig.Action, pattern string) ([]networkconfig.Adapter, error) {
+	matched := adapters
+	if pattern != "" {
+		matched = filterAdapters(adapters, pattern)
+		if len(matched) == 0 {
+			return nil, fmt.Errorf("no adapter matches %q", pattern)
+		}
+	}
+
+	selected := make([]networkconfig.Adapter, 0, len(matched))
+	for _, adapter := range matched {
+		if adapterEligibleForAction(adapter, action) {
+			selected = append(selected, adapter)
+		}
+	}
+	if len(selected) == 0 {
+		if pattern != "" {
+			return nil, fmt.Errorf("adapter %q is not eligible for /%s", pattern, action)
+		}
+		return nil, fmt.Errorf("no adapters are eligible for /%s", action)
+	}
+	return selected, nil
+}
+
+func adapterEligibleForAction(adapter networkconfig.Adapter, action networkconfig.Action) bool {
+	if adapter.InterfaceName == "" {
+		return false
+	}
+	switch action {
+	case networkconfig.ActionRelease4, networkconfig.ActionRenew4:
+		return adapter.DHCPEnabled
+	case networkconfig.ActionRelease6, networkconfig.ActionRenew6:
+		return adapter.IPv6Automatic && adapter.Kind != networkconfig.AdapterTunnel &&
+			adapter.Kind != networkconfig.AdapterVirtual
+	default:
+		return false
+	}
+}
+
+func actionNeedsAdapters(action networkconfig.Action) bool {
+	switch action {
+	case networkconfig.ActionRelease4, networkconfig.ActionRenew4,
+		networkconfig.ActionRelease6, networkconfig.ActionRenew6:
+		return true
+	default:
+		return false
+	}
 }
 
 func filterAdapters(adapters []networkconfig.Adapter, pattern string) []networkconfig.Adapter {
@@ -211,10 +379,42 @@ func wildcardMatch(pattern, value string) bool {
 	return strings.HasSuffix(value[position:], last)
 }
 
+func privilegeRetryCommand(parsed invocation, executable func() (string, error)) string {
+	if executable == nil {
+		return ""
+	}
+	path, err := executable()
+	if err != nil || path == "" {
+		return ""
+	}
+	command := "sudo " + shellQuote(path) + " /" + string(parsed.action)
+	if parsed.adapterPattern != "" {
+		command += " " + shellQuote(parsed.adapterPattern)
+	}
+	return command
+}
+
+func shellQuote(value string) string {
+	if value != "" && strings.IndexFunc(value, func(character rune) bool {
+		return !strings.ContainsRune("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_./-", character)
+	}) == -1 {
+		return value
+	}
+	return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'"
+}
+
 func writeJSON(w io.Writer, adapters []networkconfig.Adapter) error {
 	encoder := json.NewEncoder(w)
 	encoder.SetIndent("", "  ")
 	return encoder.Encode(adapters)
+}
+
+func writeResult(stdout, stderr io.Writer, output string) int {
+	if _, err := io.WriteString(stdout, output); err != nil {
+		fmt.Fprintf(stderr, "%s: write output: %v\n", CommandName, err)
+		return 1
+	}
+	return 0
 }
 
 func renderText(config networkconfig.Configuration, showAll bool) string {
@@ -231,28 +431,28 @@ func renderText(config networkconfig.Configuration, showAll bool) string {
 	}
 
 	for _, adapter := range config.Adapters {
-		writeAdapter(&output, adapter, showAll)
+		writeAdapter(&output, adapter, config.Host.DHCPv6DUID, showAll)
 	}
 	return output.String()
 }
 
 func writeHostDetails(output *strings.Builder, host networkconfig.HostInfo) {
-	writeField(output, "Host Name", valueOrBlank(host.HostName))
+	writeField(output, "Host Name", host.HostName)
 	writeField(output, "Primary Dns Suffix", host.PrimaryDNSSuffix)
 	writeField(output, "Node Type", valueOrDefault(host.NodeType, "Hybrid"))
 	writeField(output, "IP Routing Enabled", yesNo(host.IPRoutingEnabled))
-	writeField(output, "WINS Proxy Enabled", yesNo(host.WINSProxyEnabled))
+	writeField(output, "WINS Proxy Enabled", "Not applicable on macOS")
 	output.WriteString("\n")
 }
 
-func writeAdapter(output *strings.Builder, adapter networkconfig.Adapter, showAll bool) {
+func writeAdapter(output *strings.Builder, adapter networkconfig.Adapter, dhcpv6DUID string, showAll bool) {
 	fmt.Fprintf(output, "%s adapter %s:\n\n", adapterHeading(adapter.Kind), adapter.Name)
 
 	if !adapter.Connected {
 		writeField(output, "Media State", "Media disconnected")
 		writeField(output, "Connection-specific DNS Suffix", adapter.ConnectionSpecificSuffix)
 		if showAll {
-			writeAdapterMetadata(output, adapter)
+			writeAdapterMetadata(output, adapter, dhcpv6DUID)
 		}
 		output.WriteString("\n")
 		return
@@ -260,7 +460,7 @@ func writeAdapter(output *strings.Builder, adapter networkconfig.Adapter, showAl
 
 	writeField(output, "Connection-specific DNS Suffix", adapter.ConnectionSpecificSuffix)
 	if showAll {
-		writeAdapterMetadata(output, adapter)
+		writeAdapterMetadata(output, adapter, dhcpv6DUID)
 	}
 
 	for _, address := range adapter.IPv6Addresses {
@@ -300,11 +500,77 @@ func writeAdapter(output *strings.Builder, adapter networkconfig.Adapter, showAl
 	output.WriteString("\n")
 }
 
-func writeAdapterMetadata(output *strings.Builder, adapter networkconfig.Adapter) {
+func writeAdapterMetadata(output *strings.Builder, adapter networkconfig.Adapter, dhcpv6DUID string) {
 	writeField(output, "Description", adapter.Description)
 	writeField(output, "Physical Address", adapter.PhysicalAddress)
 	writeField(output, "DHCP Enabled", yesNo(adapter.DHCPEnabled))
 	writeField(output, "Autoconfiguration Enabled", yesNo(adapter.AutoconfigurationEnabled))
+	if adapter.IPv6Automatic {
+		writeField(output, "DHCPv6 IAID", valueOrDefault(adapter.DHCPv6IAID, "Not available on macOS"))
+		writeField(output, "DHCPv6 Client DUID", valueOrDefault(dhcpv6DUID, "Not available on macOS"))
+	}
+	writeField(output, "NetBIOS over Tcpip", "Not applicable on macOS")
+}
+
+func renderDNSCache(result networkconfig.ActionResult) string {
+	var output strings.Builder
+	output.WriteString("\nWindows IP Configuration\n\n")
+	output.WriteString("DNS Resolver Cache\n\n")
+
+	if result.CacheRestricted {
+		output.WriteString("   macOS did not make Host cache details available.\n")
+		return output.String()
+	}
+	if len(result.DNSCache) == 0 {
+		output.WriteString("   No DNS resolver cache entries were available.\n")
+		return output.String()
+	}
+
+	for _, entry := range result.DNSCache {
+		fmt.Fprintf(&output, "    %s\n", entry.Name)
+		output.WriteString("    ----------------------------------------\n")
+		writeField(&output, "Record Name", entry.Name)
+		writeField(&output, "Record Type", entry.Type)
+		writeField(&output, "Time To Live", "Not available on macOS")
+		label := entry.Type + " (Host) Record"
+		writeField(&output, label, entry.Address)
+		output.WriteString("\n")
+	}
+	return output.String()
+}
+
+func renderAdapterAction(action networkconfig.Action, adapters []string) string {
+	var verb string
+	var protocol string
+	switch action {
+	case networkconfig.ActionRelease4:
+		verb, protocol = "released", "IPv4"
+	case networkconfig.ActionRenew4:
+		verb, protocol = "renewed", "IPv4"
+	case networkconfig.ActionRelease6:
+		verb, protocol = "released", "IPv6"
+	case networkconfig.ActionRenew6:
+		verb, protocol = "renewed", "IPv6"
+	}
+
+	var output strings.Builder
+	output.WriteString("\nWindows IP Configuration\n\n")
+	fmt.Fprintf(&output, "Successfully %s the %s configuration for:\n", verb, protocol)
+	for _, adapter := range adapters {
+		fmt.Fprintf(&output, "   %s\n", adapter)
+	}
+	return output.String()
+}
+
+func renderNotApplicable(option string) string {
+	reasons := map[string]string{
+		"/registerdns":     "macOS does not provide Windows Dynamic DNS registration.",
+		"/showclassid":     "macOS DHCP does not use Windows DHCP class IDs.",
+		"/setclassid":      "macOS DHCP does not use Windows DHCP class IDs.",
+		"/allcompartments": "macOS does not implement Windows network compartments.",
+	}
+	reason := reasons[option]
+	return fmt.Sprintf("\nWindows IP Configuration\n\n%s is Not applicable on macOS.\n%s\n", option, reason)
 }
 
 func writeValues(output *strings.Builder, label string, values []string) {
@@ -347,10 +613,6 @@ func yesNo(value bool) string {
 		return "Yes"
 	}
 	return "No"
-}
-
-func valueOrBlank(value string) string {
-	return value
 }
 
 func valueOrDefault(value, fallback string) string {

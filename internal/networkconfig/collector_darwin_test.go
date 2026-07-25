@@ -85,10 +85,16 @@ Ethernet Address: 11:22:33:44:55:66
 func TestDarwinCollectorBuildsWindowsModel(t *testing.T) {
 	t.Parallel()
 
-	runner := func(_ context.Context, path string, _ []string, stdin string) ([]byte, error) {
+	runner := func(_ context.Context, path string, args []string, stdin string) ([]byte, error) {
 		switch {
 		case path == networksetupPath:
 			return []byte("Hardware Port: Wi-Fi\nDevice: en0\nEthernet Address: aa:bb:cc:dd:ee:ff\n"), nil
+		case path == sysctlPath:
+			return []byte("0\n"), nil
+		case path == appleIPConfigPath && len(args) > 0 && args[0] == "getdhcpduid":
+			return []byte("00:01:00:01:AA:BB:CC:DD\n"), nil
+		case path == appleIPConfigPath && len(args) > 0 && args[0] == "getdhcpiaid":
+			return []byte("123456789\n"), nil
 		case strings.HasPrefix(stdin, "list "):
 			return []byte("subKey [0] = Setup:/Network/Service/SERVICE-1/IPv4\n"), nil
 		default:
@@ -124,6 +130,9 @@ func TestDarwinCollectorBuildsWindowsModel(t *testing.T) {
 	if config.Host.HostName != "macbook" {
 		t.Fatalf("HostName=%q, want macbook", config.Host.HostName)
 	}
+	if config.Host.DHCPv6DUID != "00:01:00:01:AA:BB:CC:DD" {
+		t.Fatalf("DHCPv6DUID=%q", config.Host.DHCPv6DUID)
+	}
 	if len(config.Adapters) != 1 {
 		t.Fatalf("expected one adapter, got %#v", config.Adapters)
 	}
@@ -134,6 +143,9 @@ func TestDarwinCollectorBuildsWindowsModel(t *testing.T) {
 	}
 	if !adapter.DHCPEnabled || adapter.DHCPServer != "192.168.0.1" {
 		t.Fatalf("unexpected DHCP data: %#v", adapter)
+	}
+	if !adapter.IPv6Automatic || adapter.DHCPv6IAID != "123456789" {
+		t.Fatalf("unexpected DHCPv6 data: %#v", adapter)
 	}
 	if len(adapter.DNSServers) != 2 || adapter.DNSServers[0] != "1.1.1.1" {
 		t.Fatalf("unexpected DNS servers: %#v", adapter.DNSServers)
@@ -180,6 +192,9 @@ const scutilCollectorFixture = `<dictionary> {
 }
 <dictionary> {
   ConfigMethod : DHCP
+}
+<dictionary> {
+  ConfigMethod : Automatic
 }
 <dictionary> {
   Addresses : <array> {
