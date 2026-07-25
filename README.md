@@ -1,37 +1,71 @@
 [English](./README.md) | [한국어](./README.ko.md)
 
-# ipconfig
+# ipconfig for macOS
 
-`ipconfig` is a small macOS-focused CLI for printing the network details most people actually need: IPv4 address, subnet mask, default gateway, and optional interface metadata.
+`ipconfig` gives macOS a Windows-style view of its current TCP/IP
+configuration. It uses macOS System Configuration data for service, DNS, DHCP,
+and routing details instead of treating `/etc/resolv.conf` as the source of
+truth.
 
-The project was previously exposed as `mip`. The user-facing command is now `ipconfig`.
+```text
+Windows IP Configuration
 
-## Why this exists
+Wireless LAN adapter Wi-Fi:
 
-macOS ships `ifconfig`, but its output is noisy for routine checks. This tool keeps the default view short and adds structured output when you need to script against it.
+   Connection-specific DNS Suffix . .  :
+   IPv4 Address . . . . . . . . . . .  : 192.168.0.20
+   Subnet Mask . . . . . . . . . . . . : 255.255.255.0
+   Default Gateway . . . . . . . . . . : 192.168.0.1
+```
 
-## Features
+## What it supports
 
-- Concise text output for active interfaces with IPv4 configuration
-- `-all` mode for MAC address, MTU, IPv6 addresses, and DNS servers
-- `-interface <name>` to inspect a single interface
-- `-json` for machine-readable output
-- Explicit errors when a requested interface does not exist or has no usable IPv4 configuration
+- `ipconfig` for the Windows-style basic adapter view
+- `ipconfig /all` for host, MAC, DHCP, DNS, IPv4/IPv6, lease, and disconnected
+  adapter details
+- `ipconfig '/?'` or `ipconfig -h` for help
+- `-interface <pattern>` with case-insensitive `*` wildcard matching
+- `-json` for stable machine-readable adapter data
+- Physical, bridge, VPN, and disconnected macOS network services
+- IPv6 link-local scope IDs and per-service DNS configuration
 
-## Installation
+The state-changing Windows options such as `/release`, `/renew`, and
+`/flushdns` are intentionally not implemented yet. They fail before collecting
+network data and confirm that no settings were changed.
+
+## Install
 
 ### Homebrew
 
 ```bash
 brew tap ashcastle/mip
 brew install ashcastle/mip/ipconfig
+hash -r
+```
+
+Verify which command your shell will run:
+
+```bash
+command -v ipconfig
+type -a ipconfig
+```
+
+The first result should normally be `/opt/homebrew/bin/ipconfig` on Apple
+Silicon or `/usr/local/bin/ipconfig` on Intel. If `/usr/sbin/ipconfig` still
+appears first, initialize Homebrew in your shell and start a new login shell:
+
+```bash
+eval "$(brew shellenv)"
+exec "$SHELL" -l
 ```
 
 ### Go
 
 ```bash
-go install github.com/ashcastle/mipconfig/cmd/ipconfig@latest
+go install github.com/ashcastle/homebrew-mip/cmd/ipconfig@latest
 ```
+
+Ensure `$(go env GOPATH)/bin` precedes `/usr/sbin` in `PATH`.
 
 ### Build from source
 
@@ -39,64 +73,62 @@ go install github.com/ashcastle/mipconfig/cmd/ipconfig@latest
 git clone https://github.com/ashcastle/homebrew-mip.git
 cd homebrew-mip
 go build -o ipconfig ./cmd/ipconfig
+./ipconfig /all
 ```
 
 ## Usage
 
 ```bash
 ipconfig
-ipconfig -all
+ipconfig /all
 ipconfig -interface en0
+ipconfig -interface 'en*'
 ipconfig -json
+ipconfig -h
 ```
 
-### Example text output
+Quote `/?` and wildcard arguments in zsh because the shell otherwise treats
+`?` and `*` as filename patterns:
 
-```text
-ipconfig: Network Configuration
-
-Ethernet adapter en0:
-   IPv4 Address . . . . . . . . . . . : 192.168.0.10
-   Subnet Mask . . . . . . . . . . . . : 255.255.255.0
-   Default Gateway . . . . . . . . . . : 192.168.0.1
+```bash
+ipconfig '/?'
+ipconfig -interface 'utun*'
 ```
 
-### Example JSON output
+JSON output is an array of normalized adapter objects and contains no banner or
+diagnostics.
 
-```json
-[
-  {
-    "name": "en0",
-    "type": "Ethernet adapter en0",
-    "ipv4_address": "192.168.0.10",
-    "subnet_mask": "255.255.255.0",
-    "default_gateway": "192.168.0.1"
-  }
-]
-```
+## macOS command-name conflict
 
-## Important note for macOS users
+macOS includes an unrelated low-level command at `/usr/sbin/ipconfig`.
+Homebrew normally places its `bin` directory earlier in `PATH`, allowing this
+project to provide the interactive `ipconfig` command.
 
-macOS already includes `/usr/sbin/ipconfig`. A Homebrew-installed `ipconfig` will shadow the system command if your Homebrew `bin` directory appears earlier in `PATH`.
-
-If you need the Apple-provided tool, call it explicitly:
+The Apple command remains available explicitly:
 
 ```bash
 /usr/sbin/ipconfig
 ```
 
+## Architecture
+
+The CLI and network collection code are separated:
+
+- `internal/networkconfig` normalizes interfaces and macOS System Configuration
+  records into a testable network model.
+- `internal/ipconfig` parses Windows-compatible syntax and renders text or JSON.
+- macOS collection uses `net.Interfaces`, `/usr/sbin/scutil`, and
+  `/usr/sbin/networksetup`. Missing optional records do not fail the entire
+  command.
+- Non-macOS builds return a clear unsupported-platform error.
+
 ## Development
 
-Run tests with:
-
 ```bash
-GOCACHE=/tmp/mipconfig-gocache go test ./...
-```
-
-Run the CLI locally with:
-
-```bash
-GOCACHE=/tmp/mipconfig-gocache go run ./cmd/ipconfig --help
+go test ./...
+go test -race ./...
+go vet ./...
+go build ./cmd/ipconfig
 ```
 
 ## License

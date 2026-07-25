@@ -2,85 +2,23 @@ package ipconfig
 
 import (
 	"bytes"
-	"net"
+	"context"
+	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
+
+	"github.com/ashcastle/homebrew-mip/internal/networkconfig"
 )
 
-func TestParseDefaultGateways(t *testing.T) {
-	t.Parallel()
-
-	output := `
-Routing tables
-
-Internet:
-Destination        Gateway            Flags               Netif Expire
-default            192.168.0.1        UGSc                 en0
-default            link#18            UCSI                utun4
-0.0.0.0            10.0.0.1           UGSc                en5
-`
-
-	got := parseDefaultGateways(output)
-
-	if got["en0"] != "192.168.0.1" {
-		t.Fatalf("expected en0 gateway to be 192.168.0.1, got %q", got["en0"])
-	}
-
-	if got["utun4"] != "N/A" {
-		t.Fatalf("expected utun4 gateway to be N/A, got %q", got["utun4"])
-	}
-
-	if got["en5"] != "10.0.0.1" {
-		t.Fatalf("expected en5 gateway to be 10.0.0.1, got %q", got["en5"])
-	}
-}
-
-func TestParseDNSServers(t *testing.T) {
-	t.Parallel()
-
-	contents := `
-search local
-nameserver 8.8.8.8
-nameserver 1.1.1.1
-nameserver 8.8.8.8
-`
-
-	got := parseDNSServers(contents)
-	want := []string{"8.8.8.8", "1.1.1.1"}
-
-	if len(got) != len(want) {
-		t.Fatalf("expected %d DNS servers, got %d (%v)", len(want), len(got), got)
-	}
-
-	for i := range want {
-		if got[i] != want[i] {
-			t.Fatalf("expected DNS server %d to be %q, got %q", i, want[i], got[i])
-		}
-	}
-}
-
-func TestRunJSONOutputHasNoBanner(t *testing.T) {
+func TestRunAcceptsWindowsAllSyntax(t *testing.T) {
 	t.Parallel()
 
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
-
-	exitCode := run(&stdout, &stderr, []string{"-json"}, dependencies{
-		snapshots: func() ([]InterfaceSnapshot, error) {
-			return []InterfaceSnapshot{
-				{
-					Interface: net.Interface{Name: "en0", Flags: net.FlagUp, MTU: 1500},
-					Addrs: []net.Addr{
-						&net.IPNet{IP: net.ParseIP("192.168.0.10"), Mask: net.CIDRMask(24, 32)},
-					},
-				},
-			}, nil
-		},
-		defaultGateways: func() map[string]string {
-			return map[string]string{"en0": "192.168.0.1"}
-		},
-		dnsServers: func() []string {
-			return []string{"1.1.1.1"}
+	exitCode := run(&stdout, &stderr, []string{"/ALL"}, dependencies{
+		collect: func(context.Context) (networkconfig.Configuration, error) {
+			return testConfiguration(), nil
 		},
 	})
 
@@ -88,41 +26,242 @@ func TestRunJSONOutputHasNoBanner(t *testing.T) {
 		t.Fatalf("expected exit code 0, got %d, stderr=%q", exitCode, stderr.String())
 	}
 
-	if strings.Contains(stdout.String(), "Network Configuration") {
-		t.Fatalf("expected JSON output without banner, got %q", stdout.String())
-	}
-
-	if !strings.HasPrefix(strings.TrimSpace(stdout.String()), "[") {
-		t.Fatalf("expected JSON array output, got %q", stdout.String())
+	for _, expected := range []string{
+		"Windows IP Configuration",
+		"Host Name",
+		"Wireless LAN adapter Wi-Fi:",
+		"Description",
+		"DHCP Enabled",
+		"192.168.0.20(Preferred)",
+		"192.168.0.1",
+		"210.220.163.82",
+	} {
+		if !strings.Contains(stdout.String(), expected) {
+			t.Errorf("expected output to contain %q, got:\n%s", expected, stdout.String())
+		}
 	}
 }
 
-func TestRunFailsForUnknownInterface(t *testing.T) {
+func TestRunJSONProducesValidArray(t *testing.T) {
 	t.Parallel()
 
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
-
-	exitCode := run(&stdout, &stderr, []string{"-interface", "en9"}, dependencies{
-		snapshots: func() ([]InterfaceSnapshot, error) {
-			return []InterfaceSnapshot{
-				{
-					Interface: net.Interface{Name: "en0", Flags: net.FlagUp},
-					Addrs: []net.Addr{
-						&net.IPNet{IP: net.ParseIP("192.168.0.10"), Mask: net.CIDRMask(24, 32)},
-					},
-				},
-			}, nil
+	exitCode := run(&stdout, &stderr, []string{"-json"}, dependencies{
+		collect: func(context.Context) (networkconfig.Configuration, error) {
+			return testConfiguration(), nil
 		},
-		defaultGateways: func() map[string]string { return map[string]string{} },
-		dnsServers:      func() []string { return nil },
+	})
+
+	if exitCode != 0 {
+		t.Fatalf("expected exit code 0, got %d, stderr=%q", exitCode, stderr.String())
+	}
+
+	var adapters []networkconfig.Adapter
+	if err := json.Unmarshal(stdout.Bytes(), &adapters); err != nil {
+		t.Fatalf("expected valid JSON array, got error %v and payload %q", err, stdout.String())
+	}
+	if len(adapters) != 2 || adapters[0].InterfaceName != "en0" {
+		t.Fatalf("unexpected JSON adapters: %#v", adapters)
+	}
+	if strings.Contains(stdout.String(), "Windows IP Configuration") {
+		t.Fatalf("expected JSON without text banner, got %q", stdout.String())
+	}
+}
+
+func TestRunFiltersAdaptersWithCaseInsensitiveWildcard(t *testing.T) {
+	t.Parallel()
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	exitCode := run(&stdout, &stderr, []string{"-interface", "wi*"}, dependencies{
+		collect: func(context.Context) (networkconfig.Configuration, error) {
+			return testConfiguration(), nil
+		},
+	})
+
+	if exitCode != 0 {
+		t.Fatalf("expected exit code 0, got %d, stderr=%q", exitCode, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "Wi-Fi") {
+		t.Fatalf("expected Wi-Fi adapter, got %q", stdout.String())
+	}
+	if strings.Contains(stdout.String(), "USB Ethernet") {
+		t.Fatalf("did not expect USB Ethernet adapter, got %q", stdout.String())
+	}
+}
+
+func TestRunRejectsUnsupportedStateChangingOption(t *testing.T) {
+	t.Parallel()
+
+	called := false
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	exitCode := run(&stdout, &stderr, []string{"/renew"}, dependencies{
+		collect: func(context.Context) (networkconfig.Configuration, error) {
+			called = true
+			return networkconfig.Configuration{}, nil
+		},
+	})
+
+	if exitCode != 2 {
+		t.Fatalf("expected exit code 2, got %d", exitCode)
+	}
+	if called {
+		t.Fatal("collector must not run for an unsupported state-changing option")
+	}
+	if !strings.Contains(stderr.String(), "no network settings were changed") {
+		t.Fatalf("expected safe unsupported-option error, got %q", stderr.String())
+	}
+}
+
+func TestRunHelpDoesNotCollect(t *testing.T) {
+	t.Parallel()
+
+	called := false
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	exitCode := run(&stdout, &stderr, []string{"/?"}, dependencies{
+		collect: func(context.Context) (networkconfig.Configuration, error) {
+			called = true
+			return networkconfig.Configuration{}, nil
+		},
+	})
+
+	if exitCode != 0 {
+		t.Fatalf("expected exit code 0, got %d, stderr=%q", exitCode, stderr.String())
+	}
+	if called {
+		t.Fatal("collector must not run for help")
+	}
+	if !strings.Contains(stdout.String(), "WINDOWS-COMPATIBLE OPTIONS") {
+		t.Fatalf("expected help output, got %q", stdout.String())
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("expected no duplicate help on stderr, got %q", stderr.String())
+	}
+}
+
+func TestRunPropagatesHelpWriterFailure(t *testing.T) {
+	t.Parallel()
+
+	var stderr bytes.Buffer
+	exitCode := run(failingWriter{}, &stderr, []string{"-h"}, dependencies{
+		collect: func(context.Context) (networkconfig.Configuration, error) {
+			return networkconfig.Configuration{}, nil
+		},
 	})
 
 	if exitCode != 1 {
 		t.Fatalf("expected exit code 1, got %d", exitCode)
 	}
+	if !strings.Contains(stderr.String(), "write output") {
+		t.Fatalf("expected help write error, got %q", stderr.String())
+	}
+}
 
-	if !strings.Contains(stderr.String(), `interface "en9" not found`) {
-		t.Fatalf("expected missing interface error, got %q", stderr.String())
+func TestRunPropagatesTextWriterFailure(t *testing.T) {
+	t.Parallel()
+
+	var stderr bytes.Buffer
+	exitCode := run(failingWriter{}, &stderr, nil, dependencies{
+		collect: func(context.Context) (networkconfig.Configuration, error) {
+			return testConfiguration(), nil
+		},
+	})
+
+	if exitCode != 1 {
+		t.Fatalf("expected exit code 1, got %d", exitCode)
+	}
+	if !strings.Contains(stderr.String(), "write output") {
+		t.Fatalf("expected write error, got %q", stderr.String())
+	}
+}
+
+func TestRunReportsCollectorFailure(t *testing.T) {
+	t.Parallel()
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	exitCode := run(&stdout, &stderr, nil, dependencies{
+		collect: func(context.Context) (networkconfig.Configuration, error) {
+			return networkconfig.Configuration{}, errors.New("system configuration unavailable")
+		},
+	})
+
+	if exitCode != 1 {
+		t.Fatalf("expected exit code 1, got %d", exitCode)
+	}
+	if !strings.Contains(stderr.String(), "system configuration unavailable") {
+		t.Fatalf("expected collector error, got %q", stderr.String())
+	}
+}
+
+func TestWildcardMatch(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		pattern string
+		value   string
+		want    bool
+	}{
+		{pattern: "Local*", value: "Local Area Connection", want: true},
+		{pattern: "*Con*", value: "Local Area Connection", want: true},
+		{pattern: "wi*", value: "Wi-Fi", want: true},
+		{pattern: "en?", value: "en0", want: false},
+		{pattern: "Ethernet", value: "Wi-Fi", want: false},
+	}
+
+	for _, test := range tests {
+		test := test
+		t.Run(test.pattern+"/"+test.value, func(t *testing.T) {
+			t.Parallel()
+			if got := wildcardMatch(test.pattern, test.value); got != test.want {
+				t.Fatalf("wildcardMatch(%q, %q)=%t, want %t", test.pattern, test.value, got, test.want)
+			}
+		})
+	}
+}
+
+type failingWriter struct{}
+
+func (failingWriter) Write([]byte) (int, error) {
+	return 0, errors.New("disk full")
+}
+
+func testConfiguration() networkconfig.Configuration {
+	return networkconfig.Configuration{
+		Host: networkconfig.HostInfo{
+			HostName:         "macbook",
+			PrimaryDNSSuffix: "example.test",
+			NodeType:         "Hybrid",
+		},
+		Adapters: []networkconfig.Adapter{
+			{
+				Name:                     "Wi-Fi",
+				Description:              "AirPort (en0)",
+				InterfaceName:            "en0",
+				Kind:                     networkconfig.AdapterWireless,
+				Connected:                true,
+				PhysicalAddress:          "AA-BB-CC-DD-EE-FF",
+				DHCPEnabled:              true,
+				AutoconfigurationEnabled: true,
+				IPv4Addresses: []networkconfig.IPv4Assignment{
+					{Address: "192.168.0.20", SubnetMask: "255.255.255.0"},
+				},
+				DefaultGateways: []string{"192.168.0.1"},
+				DHCPServer:      "192.168.0.1",
+				DNSServers:      []string{"210.220.163.82", "219.250.36.130"},
+				LeaseObtained:   "07/25/2026 16:57:17",
+				LeaseExpires:    "07/25/2026 18:57:17",
+			},
+			{
+				Name:            "USB Ethernet",
+				Description:     "Ethernet (en5)",
+				InterfaceName:   "en5",
+				Kind:            networkconfig.AdapterEthernet,
+				PhysicalAddress: "11-22-33-44-55-66",
+			},
+		},
 	}
 }

@@ -3,7 +3,7 @@ package main
 import (
 	"os"
 
-	"github.com/ashcastle/mipconfig/internal/ipconfig"
+	"github.com/ashcastle/homebrew-mip/internal/ipconfig"
 )
 
 func main() {

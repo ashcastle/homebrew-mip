@@ -1,3 +1,3 @@
-module github.com/ashcastle/mipconfig
+module github.com/ashcastle/homebrew-mip
 
 go 1.24.0

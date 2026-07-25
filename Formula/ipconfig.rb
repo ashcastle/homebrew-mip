@@ -1,9 +1,11 @@
 class Ipconfig < Formula
-  desc "Concise macOS network configuration CLI"
+  desc "Windows-style ipconfig for macOS"
   homepage "https://github.com/ashcastle/homebrew-mip"
-  url "https://github.com/ashcastle/homebrew-mip.git", branch: "main", using: :git
-  version "main"
+  url "https://github.com/ashcastle/homebrew-mip.git",
+      tag:   "v1.1.0",
+      using: :git
   license "GPL-2.0"
+  head "https://github.com/ashcastle/homebrew-mip.git", branch: "main"
 
   depends_on "go" => :build
 
@@ -13,13 +15,22 @@ class Ipconfig < Formula
 
   def caveats
     <<~EOS
-      This formula installs `ipconfig`, which can shadow macOS's built-in `/usr/sbin/ipconfig`
-      if your Homebrew bin directory appears earlier in PATH.
+      macOS also includes an unrelated command at /usr/sbin/ipconfig.
+
+      Verify this formula is active:
+        command -v ipconfig
+
+      If /usr/sbin/ipconfig appears first, initialize Homebrew in your shell:
+        eval "$(brew shellenv)"
+        exec "$SHELL" -l
+
+      Apple's command remains available as /usr/sbin/ipconfig.
     EOS
   end
 
   test do
-    output = shell_output("#{bin}/ipconfig -json")
-    assert_match "[", output
+    assert_match "Windows IP Configuration", shell_output("#{bin}/ipconfig")
+    assert_match '"interface_name"', shell_output("#{bin}/ipconfig -json")
+    assert_match "WINDOWS-COMPATIBLE OPTIONS", shell_output("#{bin}/ipconfig -h")
   end
 end

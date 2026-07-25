@@ -1,22 +1,36 @@
 [English](./README.md) | [한국어](./README.ko.md)
 
-# ipconfig
+# macOS용 ipconfig
 
-`ipconfig`는 macOS에서 자주 확인하는 네트워크 정보만 간결하게 보여주는 작은 CLI입니다. 기본 출력은 IPv4 주소, 서브넷 마스크, 기본 게이트웨이에 집중하고, 필요할 때만 추가 정보를 보여줍니다.
+`ipconfig`는 macOS의 현재 TCP/IP 구성을 Windows와 유사한 형식으로
+보여줍니다. `/etc/resolv.conf`를 정답으로 간주하지 않고 macOS System
+Configuration에서 네트워크 서비스, DNS, DHCP, 라우팅 정보를 수집합니다.
 
-이 프로젝트는 이전에 `mip` 명령으로 노출되어 있었고, 이제 사용자용 명령은 `ipconfig`로 통일되었습니다.
+```text
+Windows IP Configuration
 
-## 목적
+Wireless LAN adapter Wi-Fi:
 
-macOS의 `ifconfig`는 일상적인 확인 용도로는 너무 장황합니다. 이 도구는 기본 출력은 짧게 유지하고, 스크립트 연동이 필요할 때는 구조화된 출력도 제공합니다.
+   Connection-specific DNS Suffix . .  :
+   IPv4 Address . . . . . . . . . . .  : 192.168.0.20
+   Subnet Mask . . . . . . . . . . . . : 255.255.255.0
+   Default Gateway . . . . . . . . . . : 192.168.0.1
+```
 
-## 주요 기능
+## 지원 범위
 
-- IPv4 설정이 있는 활성 인터페이스만 간결하게 출력
-- `-all` 옵션으로 MAC 주소, MTU, IPv6 주소, DNS 서버 출력
-- `-interface <name>`으로 특정 인터페이스만 조회
-- `-json`으로 기계가 읽기 쉬운 출력 제공
-- 존재하지 않는 인터페이스나 사용 가능한 IPv4 설정이 없는 인터페이스에 대해 명확한 오류 반환
+- `ipconfig`: Windows식 기본 어댑터 출력
+- `ipconfig /all`: 호스트명, MAC, DHCP, DNS, IPv4/IPv6, 임대 시간,
+  연결이 끊긴 어댑터까지 표시
+- `ipconfig '/?'` 또는 `ipconfig -h`: 도움말
+- `-interface <pattern>`: 대소문자를 구분하지 않는 `*` 와일드카드 검색
+- `-json`: 안정적인 기계 판독용 어댑터 데이터
+- 물리·브리지·VPN·연결 해제 macOS 네트워크 서비스 지원
+- IPv6 link-local scope ID와 서비스별 DNS 구성 지원
+
+`/release`, `/renew`, `/flushdns`처럼 네트워크 상태를 변경하는 Windows
+옵션은 아직 의도적으로 구현하지 않았습니다. 이 옵션은 네트워크 정보를
+수집하기 전에 실패하며, 아무 설정도 변경하지 않았음을 명시합니다.
 
 ## 설치
 
@@ -25,78 +39,93 @@ macOS의 `ifconfig`는 일상적인 확인 용도로는 너무 장황합니다. 
 ```bash
 brew tap ashcastle/mip
 brew install ashcastle/mip/ipconfig
+hash -r
+```
+
+셸이 어떤 명령을 실행할지 확인합니다.
+
+```bash
+command -v ipconfig
+type -a ipconfig
+```
+
+첫 결과는 Apple Silicon에서 보통 `/opt/homebrew/bin/ipconfig`, Intel
+Mac에서는 `/usr/local/bin/ipconfig`여야 합니다. `/usr/sbin/ipconfig`가
+먼저 나온다면 Homebrew 환경을 셸에 반영하고 로그인 셸을 다시 시작하세요.
+
+```bash
+eval "$(brew shellenv)"
+exec "$SHELL" -l
 ```
 
 ### Go
 
 ```bash
-go install github.com/ashcastle/mipconfig/cmd/ipconfig@latest
+go install github.com/ashcastle/homebrew-mip/cmd/ipconfig@latest
 ```
 
-### 소스에서 직접 빌드
+`$(go env GOPATH)/bin`이 `PATH`에서 `/usr/sbin`보다 앞에 있어야 합니다.
+
+### 소스에서 빌드
 
 ```bash
 git clone https://github.com/ashcastle/homebrew-mip.git
 cd homebrew-mip
 go build -o ipconfig ./cmd/ipconfig
+./ipconfig /all
 ```
 
 ## 사용법
 
 ```bash
 ipconfig
-ipconfig -all
+ipconfig /all
 ipconfig -interface en0
+ipconfig -interface 'en*'
 ipconfig -json
+ipconfig -h
 ```
 
-### 텍스트 출력 예시
+zsh는 `?`와 `*`를 파일 패턴으로 해석하므로 다음 인수는 따옴표로
+감싸야 합니다.
 
-```text
-ipconfig: Network Configuration
-
-Ethernet adapter en0:
-   IPv4 Address . . . . . . . . . . . : 192.168.0.10
-   Subnet Mask . . . . . . . . . . . . : 255.255.255.0
-   Default Gateway . . . . . . . . . . : 192.168.0.1
+```bash
+ipconfig '/?'
+ipconfig -interface 'utun*'
 ```
 
-### JSON 출력 예시
+JSON 출력은 정규화된 어댑터 객체의 배열이며 배너나 진단 문구를 섞지
+않습니다.
 
-```json
-[
-  {
-    "name": "en0",
-    "type": "Ethernet adapter en0",
-    "ipv4_address": "192.168.0.10",
-    "subnet_mask": "255.255.255.0",
-    "default_gateway": "192.168.0.1"
-  }
-]
-```
+## macOS 기본 명령과의 이름 충돌
 
-## macOS 사용자 주의사항
+macOS에는 이 프로젝트와 용도가 다른 `/usr/sbin/ipconfig`가 포함되어
+있습니다. Homebrew의 `bin` 경로가 `PATH` 앞쪽에 있으면 이 프로젝트의
+`ipconfig`가 평소 입력하는 명령으로 활성화됩니다.
 
-macOS에는 이미 `/usr/sbin/ipconfig`가 포함되어 있습니다. Homebrew로 설치한 `ipconfig`는 Homebrew의 `bin` 경로가 `PATH` 앞쪽에 있으면 시스템 명령을 가릴 수 있습니다.
-
-Apple이 제공하는 기본 도구를 써야 한다면 다음처럼 명시적으로 호출하세요.
+Apple 기본 명령은 언제든 명시적으로 호출할 수 있습니다.
 
 ```bash
 /usr/sbin/ipconfig
 ```
 
+## 구조
+
+- `internal/networkconfig`: 인터페이스와 macOS System Configuration
+  레코드를 테스트 가능한 네트워크 모델로 정규화
+- `internal/ipconfig`: Windows 호환 인수 해석과 텍스트·JSON 출력 담당
+- macOS 수집기는 `net.Interfaces`, `/usr/sbin/scutil`,
+  `/usr/sbin/networksetup`을 사용하며 선택 정보가 없어도 전체 실행을
+  실패시키지 않음
+- macOS가 아닌 빌드에서는 지원하지 않는 플랫폼임을 명확히 반환
+
 ## 개발
 
-테스트 실행:
-
 ```bash
-GOCACHE=/tmp/mipconfig-gocache go test ./...
-```
-
-로컬 실행:
-
-```bash
-GOCACHE=/tmp/mipconfig-gocache go run ./cmd/ipconfig --help
+go test ./...
+go test -race ./...
+go vet ./...
+go build ./cmd/ipconfig
 ```
 
 ## 라이선스
